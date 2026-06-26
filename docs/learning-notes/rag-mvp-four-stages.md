@@ -937,7 +937,79 @@ Demo 中建议专门准备“反例问题”，用来展示不知道机制：
 - query classification：先判断问题是定义类、流程类、检查表类还是无关问题。
 - answer validation：生成后再检查答案是否有上下文依据。
 
-### 5.8 Python RAG 服务与 Java 业务系统集成
+### 5.8 RAG 框架选型：Python 与 Java
+
+RAG 框架可以分成三类来看：
+
+```text
+开发框架：帮助开发者组合 loader、chunk、embedding、retriever、LLM、agent。
+RAG 专用框架：更关注文档索引、检索、问答、评估和生产化链路。
+低代码 / 平台型产品：更适合快速搭建应用、工作流和管理界面。
+```
+
+Python 生态更成熟，适合快速验证和深度定制；Java 生态更适合接入企业已有系统，例如 Spring Boot、权限、流程、后台管理和内部服务治理。
+
+Python 侧常见选择：
+
+| 框架 / 平台 | 定位 | 优势 | 局限 | 适合场景 |
+| --- | --- | --- | --- | --- |
+| LangChain / LangGraph | LLM 应用和 Agent 编排框架 | 生态大、组件多、工具链丰富，LangGraph 适合复杂流程和状态机 | 抽象较多，版本变化快，工程上需要约束用法 | 需要灵活组合 RAG、工具调用、Agent 工作流 |
+| LlamaIndex | 数据框架和 RAG 框架 | 围绕数据接入、索引、retriever、query engine 的抽象更贴近 RAG | 深度定制时也需要理解内部抽象 | 文档问答、知识库、多索引、多数据源 RAG |
+| Haystack | 生产化 NLP / RAG Pipeline 框架 | pipeline 思路清晰，适合组件化编排和生产服务 | 国内教程相对少一些 | 生产级问答、搜索增强、可观测 pipeline |
+| DSPy | LLM 程序优化框架 | 强调 prompt / pipeline 的自动优化和评估 | 对初学者门槛较高，不是传统 loader-to-vectorstore 框架 | 后期做检索、重排、生成策略优化 |
+| RAGFlow | 面向 RAG 的开源平台 | 内置文档解析、知识库、检索、问答界面，更接近产品形态 | 二次开发要适应其平台架构 | 想快速搭一个完整 RAG 知识库产品 |
+| Dify | LLM 应用开发平台 | 工作流、应用管理、模型接入、知识库能力完整 | 深度底层检索策略不如自研灵活 | 快速做原型、内部应用、运营管理界面 |
+
+Java 侧常见选择：
+
+| 框架 | 定位 | 优势 | 局限 | 适合场景 |
+| --- | --- | --- | --- | --- |
+| Spring AI | Spring 体系内的 AI 应用框架 | 和 Spring Boot、配置、Bean、企业工程体系结合自然 | AI 生态丰富度不如 Python | Java 企业项目中接入 LLM、Embedding、Vector Store |
+| LangChain4j | Java 版 LLM 应用框架 | 面向 Java 开发者，提供模型、embedding、retriever、tool、memory 等抽象 | 生态规模小于 Python LangChain | Java 服务中直接实现 RAG 或 Agent 能力 |
+| Semantic Kernel Java | 微软 Semantic Kernel 的 Java 实现 | 适合函数调用、插件、规划和企业系统集成 | Java 生态成熟度仍需结合版本评估 | 微软技术栈、插件化 Agent、企业编排 |
+| Quarkus LangChain4j | Quarkus 对 LangChain4j 的集成 | 适合云原生、轻量 Java 服务 | 更偏 Quarkus 技术栈 | 已经使用 Quarkus 的团队 |
+
+框架选型不要只看“哪个最火”，要看当前系统的主要矛盾：
+
+| 主要目标 | 推荐方向 |
+| --- | --- |
+| 快速学习 RAG 全链路 | LangChain 或 LlamaIndex |
+| 文档知识库问答质量优先 | LlamaIndex / Haystack / 自研 Python pipeline |
+| 复杂 Agent 工作流 | LangGraph，后续再参考 DeerFlow 这类 Agent 平台 |
+| 快速做可演示产品 | Dify / RAGFlow |
+| 企业 Java 系统集成 | Spring AI / LangChain4j |
+| 公司已有 Spring Boot 主系统 | Java 调 Python RAG 服务，或者 Spring AI 只做调用层 |
+
+对于当前 `吉野家5S管理手册` Demo，推荐路线是：
+
+```text
+短期：Python 自研轻量 RAG pipeline
+  - PDF 解析、chunk、embedding、ES9 检索、reranker、LLM 回答都放在 Python 里
+  - 先保证准确率、引用页码、拒答机制
+
+中期：封装为 FastAPI 服务
+  - Java / Spring Boot 通过 HTTP 调用
+  - 返回 answer、citations、retrieved_chunks、answerable
+
+后期：根据企业技术栈选择
+  - 如果继续 Python 为主：可引入 LlamaIndex / LangChain / Haystack 做更完整编排
+  - 如果 Java 侧要承担更多 AI 能力：评估 Spring AI 或 LangChain4j
+  - 如果要快速产品化管理后台：评估 Dify / RAGFlow
+```
+
+当前不建议一开始就把框架堆满。周三 Demo 的关键是证明核心链路可靠：
+
+```text
+文档解析准确
+chunk 可追溯
+检索能命中正确页
+不知道时能拒答
+回答能带引用
+```
+
+框架是为了降低工程复杂度，不是为了替代检索质量本身。RAG 的效果上限仍然主要取决于文档解析、分块、embedding、检索策略、重排和提示词约束。
+
+### 5.9 Python RAG 服务与 Java 业务系统集成
 
 当前 RAG Demo 使用 Python 开发是合理的，因为 Python 在 AI 和文档处理生态上更成熟：
 

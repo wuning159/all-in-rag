@@ -1497,3 +1497,184 @@ dense_vector + kNN 检索通常走 HNSW/量化等 ANN 路线。
 数据变大：ANN 是必要的，否则检索会慢。
 高可靠：ANN 召回 + rerank + 不知道机制，比单纯追求向量最近更重要。
 ```
+
+### 5.12 ES + Milvus 组合使用与 Milvus 索引粒度
+
+ES 和 Milvus 不是非此即彼，它们可以组合使用。
+
+更合理的分工是：
+
+```text
+ES：负责关键词、精确匹配、过滤、聚合、业务搜索。
+Milvus：负责向量相似度检索。
+LLM：负责基于召回结果生成答案。
+```
+
+例如用户问：
+
+```text
+整理 10 分包含哪些检查项？
+```
+
+可以设计为：
+
+```text
+ES 先做关键词 / 字段过滤：
+  source = 吉野家5S管理手册
+  chunk_type = table_row
+  content 包含 整理 / 10分
+
+Milvus 做语义召回：
+  找和问题语义最相似的 chunk
+
+融合层：
+  合并 ES 和 Milvus 的候选结果
+  rerank
+  判断是否可回答
+  交给 LLM 生成答案
+```
+
+这样可以结合两者优势：
+
+```text
+ES 擅长“查得准”。
+Milvus 擅长“找得像”。
+二者结合更稳。
+```
+
+#### 精确匹配、KNN 与 ANN 的区别
+
+这里需要区分三个概念：
+
+| 概念 | 解决的问题 | 示例 |
+| --- | --- | --- |
+| 精确匹配 | 字段值是否完全符合条件 | `source = '吉野家5S管理手册.pdf'` |
+| KNN | 精确找出距离 query vector 最近的 K 个向量 | 暴力计算所有向量距离后排序 |
+| ANN | 近似找出距离 query vector 最近的 K 个向量 | 用 HNSW、IVF、DiskANN 等索引快速召回 |
+
+所以 KNN 不是字段精确匹配，而是：
+
+```text
+精确最近邻。
+```
+
+ANN 是：
+
+```text
+近似最近邻。
+```
+
+更准确的理解是：
+
+```text
+精确匹配：字段值必须对得上。
+精确 KNN：向量距离精确最近。
+ANN：向量距离近似最近，但速度更快。
+```
+
+实际系统通常不是单选，而是组合：
+
+```text
+metadata filter / BM25 先缩小范围
+ANN 快速召回候选
+reranker 做二次精排
+LLM 做基于上下文回答
+不知道机制兜底
+```
+
+这就是为什么真实业务系统会同时需要：
+
+- 精确匹配
+- 关键词检索
+- 向量检索
+- rerank
+- 拒答机制
+
+#### Milvus 的索引粒度
+
+Milvus 的索引通常是按字段建立的，不是按单条数据建立的。
+
+例如一个 Collection：
+
+```text
+collection: rag_chunks
+fields:
+  id
+  content
+  dense_vector
+  sparse_vector
+  image_vector
+  source
+  page
+  chunk_type
+```
+
+可以给不同字段配置不同索引：
+
+```text
+dense_vector -> HNSW
+sparse_vector -> sparse index
+image_vector -> IVF / HNSW
+source/page/chunk_type -> 标量索引
+```
+
+但通常不能做到：
+
+```text
+第 1 条 entity 用 HNSW
+第 2 条 entity 用 FLAT
+第 3 条 entity 用 DiskANN
+```
+
+也就是说：
+
+```text
+Milvus 的索引粒度主要是字段级，不是单条数据级。
+```
+
+Partition 的作用也不是给每条数据配置不同索引，而是把同一个 Collection 中的数据按逻辑分区，查询时缩小搜索范围。
+
+例如：
+
+```text
+collection: rag_chunks
+partition: yoshinoya_5s
+partition: food_safety
+partition: employee_training
+```
+
+当用户只问 5S 手册时，可以只搜：
+
+```text
+partition = yoshinoya_5s
+```
+
+这样可以减少无关数据干扰，也能提升查询效率。
+
+当前 demo 的推荐设计：
+
+```text
+ES9：
+  content 做 BM25
+  source/page/section/chunk_type 做过滤
+  适合关键词和精确条件
+
+Milvus：
+  dense_vector 做语义召回
+  source/page/chunk_type 也保留 metadata
+  适合向量相似度搜索
+
+融合层：
+  合并 ES 和 Milvus 结果
+  rerank
+  判断是否可回答
+```
+
+一句话总结：
+
+```text
+ES + Milvus 可以结合用。
+KNN/ANN 是向量最近邻问题，不是字段精确匹配。
+Milvus 索引通常按字段建，不是按单条数据建。
+Partition 用来缩小检索范围，不是给每条数据配置不同索引。
+```

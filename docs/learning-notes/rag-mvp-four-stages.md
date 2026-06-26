@@ -936,3 +936,130 @@ Demo 中建议专门准备“反例问题”，用来展示不知道机制：
 - query rewrite：将用户口语问题改写成更适合检索的问题。
 - query classification：先判断问题是定义类、流程类、检查表类还是无关问题。
 - answer validation：生成后再检查答案是否有上下文依据。
+
+### 5.8 Python RAG 服务与 Java 业务系统集成
+
+当前 RAG Demo 使用 Python 开发是合理的，因为 Python 在 AI 和文档处理生态上更成熟：
+
+- LangChain / LlamaIndex
+- PyMuPDF4LLM / pdfplumber / Unstructured / MinerU
+- sentence-transformers / transformers
+- pymilvus / Elasticsearch Python client
+- reranker、embedding、多模态模型生态
+
+但企业内部系统往往更偏 Java 技术栈，例如 Spring Boot、权限系统、用户体系、工作流、后台管理系统等。因此更适合采用分层集成，而不是一开始就把所有 RAG 能力改写成 Java。
+
+当前推荐架构是：
+
+```text
+Java 业务系统
+  -> 负责用户、权限、菜单、流程、业务接口、前端集成
+  -> 通过 HTTP 调用 Python RAG 服务
+
+Python RAG 服务
+  -> 负责 PDF 解析、文本清洗、分块、embedding、ES9/Milvus 检索、rerank、LLM 生成
+  -> 对外提供标准 API
+```
+
+也就是：
+
+```text
+Java 做业务主系统。
+Python 做 AI/RAG 能力服务。
+```
+
+这样做的优势：
+
+| 优势 | 说明 |
+| --- | --- |
+| 技术分工清晰 | Java 管业务，Python 管 AI 能力 |
+| 开发效率高 | 文档解析、embedding、reranker 等能力用 Python 更快 |
+| 企业集成友好 | Java 系统只需要调用 HTTP API，不需要理解内部 RAG 实现 |
+| 后续可演进 | 如果某些能力稳定后，再考虑迁移到 Java |
+| 风险低 | 不需要为了技术栈统一而牺牲 AI 生态 |
+
+推荐演进路线：
+
+```text
+第一阶段：Python 脚本跑通吉野家5S手册 RAG Demo
+第二阶段：封装成 Python FastAPI 服务
+第三阶段：Java / Spring Boot 通过 HTTP 调用 RAG 服务
+第四阶段：增加鉴权、日志、问题记录、反馈机制
+第五阶段：根据企业要求，评估是否迁移部分检索逻辑到 Java
+```
+
+Python RAG 服务可以先提供一个核心接口：
+
+```http
+POST /ask
+```
+
+请求示例：
+
+```json
+{
+  "question": "整理10分包含哪些检查项？",
+  "mode": "hybrid",
+  "top_k": 5
+}
+```
+
+返回示例：
+
+```json
+{
+  "answer": "整理10分包含物品清理、个人物品、物品分层存放等检查项。",
+  "citations": [
+    {
+      "source": "吉野家5S管理手册.pdf",
+      "page": 22,
+      "section": "5S检查评估表"
+    }
+  ],
+  "retrieved_chunks": [
+    {
+      "content": "...",
+      "page": 22,
+      "section": "5S检查评估表",
+      "score": 0.82
+    }
+  ],
+  "answerable": true
+}
+```
+
+对于无法回答的问题，返回也要结构化：
+
+```json
+{
+  "answer": "手册中未找到关于“李四”的信息。",
+  "citations": [],
+  "retrieved_chunks": [],
+  "answerable": false
+}
+```
+
+Java 侧只需要关心：
+
+- 用户问题
+- 调用 `/ask`
+- 展示答案
+- 展示引用页码
+- 记录用户反馈
+- 做权限和审计
+
+后续如果进入企业级落地，可以再增加：
+
+- `POST /documents/upload`：上传文档。
+- `POST /documents/index`：触发文档解析和入库。
+- `GET /documents/{id}/status`：查看索引状态。
+- `POST /feedback`：记录答案好坏。
+- `GET /health`：健康检查。
+
+当前判断：
+
+```text
+不要急着纯 Java 化。
+先用 Python 把 RAG 准确性做好，再用 Java 做系统集成。
+Python RAG 服务 + Java 业务系统，是当前阶段最稳的企业落地路线。
+```

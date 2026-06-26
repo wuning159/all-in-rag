@@ -1224,3 +1224,92 @@ RETURN item
 向量索引解决“谁和它最像”。
 图数据库解决“谁和谁有什么关系”。
 ```
+
+### 5.10 Milvus 与 ES9 的向量索引对比
+
+Milvus 和 ES9 都能做向量检索，但它们的索引体系不是一一对应的。
+
+Milvus 更像专业向量数据库，会把向量索引类型直接暴露出来供选择：
+
+| Milvus 索引类型 | 核心思路 | 适合场景 |
+| --- | --- | --- |
+| FLAT | 暴力精确查找，计算 query 和所有向量的真实距离 | 数据量小、追求 100% 准确率 |
+| IVF_FLAT / IVF_SQ8 / IVF_PQ | 先聚类分桶，再只搜索部分桶 | 大规模、高吞吐、可接受近似召回 |
+| HNSW | 构建多层近邻图，沿图快速搜索 | 低延迟、高召回、内存相对充足 |
+| DiskANN | 面向磁盘/SSD 的近邻图索引 | 数据量很大，无法全部放入内存 |
+
+ES9 的向量检索则建立在 `dense_vector` 字段上。它主要通过 kNN 检索向量字段，并使用 HNSW 这类近似最近邻结构加速搜索。
+
+ES9 常见思路可以这样理解：
+
+| ES9 能力 | 类比 Milvus | 说明 |
+| --- | --- | --- |
+| `script_score` 暴力打分 | FLAT | 扫描候选文档并计算相似度，准确但慢，适合小数据或重排 |
+| `dense_vector` + kNN | HNSW | ES 使用 HNSW 支持高效近似 kNN |
+| `int8_hnsw` | HNSW + int8 量化 | 降低内存占用，牺牲少量精度 |
+| `int4_hnsw` | HNSW + int4 量化 | 进一步降低内存，占用更少但精度损失更大 |
+| `bbq_hnsw` | HNSW + binary quantization | 大幅降低内存，通常需要 oversampling/rerank 弥补精度 |
+| `bbq_disk` | 类似磁盘型压缩向量索引 | 适合更大规模向量数据，减少内存压力 |
+
+也就是说：
+
+```text
+Milvus：索引算法选择更丰富，偏专业向量数据库。
+ES9：向量检索以 dense_vector/kNN 为入口，核心是 HNSW + 量化/磁盘优化。
+```
+
+ES9 的向量字段通常长这样：
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "content_vector": {
+        "type": "dense_vector",
+        "dims": 384,
+        "similarity": "cosine",
+        "index_options": {
+          "type": "int8_hnsw"
+        }
+      }
+    }
+  }
+}
+```
+
+其中几个关键参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `dims` | 向量维度，必须和 embedding 模型输出维度一致 |
+| `similarity` | 相似度计算方式，如 `cosine`、`dot_product`、`l2_norm` |
+| `index_options.type` | 控制向量索引和量化方式，如 `int8_hnsw`、`int4_hnsw`、`bbq_hnsw`、`bbq_disk` |
+| `index` | 是否为向量字段建索引，默认通常用于 kNN 检索 |
+
+对当前 `吉野家5S管理手册` demo 来说，数据规模很小，不需要纠结复杂向量索引。更重要的是：
+
+```text
+先把解析、分块、embedding、metadata、混合检索、不知道机制做好。
+```
+
+如果使用 `BAAI/bge-small-zh-v1.5`，向量维度通常是 512；如果使用 `bge-m3`，向量维度是 1024。ES9 的 `dims` 必须和模型输出一致。
+
+当前 demo 可以先选择：
+
+```text
+ES9 dense_vector + cosine similarity + 默认 kNN 索引策略
+```
+
+等数据量变大后，再考虑：
+
+- 是否显式配置 `int8_hnsw`
+- 是否使用 `bbq_hnsw` / `bbq_disk` 降低内存
+- 是否使用 oversampling + rerank 提高量化后的召回质量
+- 是否迁移到 Milvus / Qdrant 做更专业的向量检索
+
+一句话总结：
+
+```text
+Milvus 更像专业向量检索引擎，索引类型选择多。
+ES9 更像搜索引擎里加入向量能力，主要路线是 HNSW + 量化 + 混合检索。
+```

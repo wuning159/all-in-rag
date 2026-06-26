@@ -9,6 +9,8 @@
 
 后续如果某段讨论值得总结，可以直接追加到对应阶段，形成一份可持续更新的工程笔记。
 
+维护约定：后续学习过程中，如果某次讨论形成了重要判断、项目决策、工具选型或可复用经验，就直接更新到本文档；阶段性重要更新同步提交并推送到 GitHub，方便在不同电脑继续学习和开发。
+
 ## 1. 数据准备与清洗
 
 数据准备与清洗是 RAG 系统的地基。这个阶段的目标不是简单把文件读出来，而是把原始文档转换成适合检索和生成的结构化或半结构化内容。
@@ -541,3 +543,140 @@ chunk_overlap = 100
 固定长度分块适合作为兜底，不适合作为这个 PDF 的第一分块策略。
 这个项目应优先使用结构化分块：章节按标题切，检查表按行列结构切。
 ```
+
+### 5.6 向量数据库选型与 ES9 Demo 决策
+
+RAG 的检索环节通常以 embedding 语义搜索为核心，可以拆成两条链路：
+
+```text
+离线索引构建：
+文档 -> 加载 -> 清洗 -> 分块 -> embedding -> 向量库 / 检索引擎
+
+在线查询检索：
+用户问题 -> 同一个 embedding 模型 -> 问题向量 -> 相似度检索 -> Top-K chunk -> LLM 生成答案
+```
+
+这里有一个重要原则：
+
+```text
+文档 chunk 用什么 embedding 模型入库，用户问题通常也要用同一个 embedding 模型向量化。
+```
+
+原因是不同 embedding 模型会形成不同的向量空间。如果文档向量用 `bge-small-zh-v1.5` 生成，而查询向量用另一个不兼容的模型生成，相似度计算就不再可靠。
+
+如果后续更换 embedding 模型，通常需要重新执行：
+
+```text
+所有 chunk 重新 embedding -> 重新写入索引
+```
+
+概念上，向量检索是在计算“问题向量”和“文档块向量”的相似度。工程实现上，向量数据库通常不会真的逐个暴力比较所有向量，而是使用 ANN（Approximate Nearest Neighbor，近似最近邻）索引来加速检索，例如 HNSW、IVF、DiskANN 等。
+
+常见向量数据库和检索方案对比：
+
+| 工具 | 定位 | 优势 | 局限 | 当前项目建议 |
+| --- | --- | --- | --- | --- |
+| FAISS | 单机向量检索库 | 快、经典、适合本地实验和算法验证 | 不是完整数据库，metadata、权限、服务化能力弱 | 学习和本地验证可以用 |
+| Chroma | 轻量 RAG 向量库 | 上手快，适合 demo、小型知识库、LangChain 生态友好 | 大规模生产能力相对弱 | 学习阶段可用 |
+| Qdrant | 开源向量数据库 | 部署简单，payload/filter 能力好，适合中小型生产 RAG | 超大规模生态厚度不如 Milvus | 后续替代 ES 做纯向量方案时可考虑 |
+| Milvus | 企业级分布式向量数据库 | 大规模、高性能、索引类型多，生态成熟 | 部署和运维复杂度更高 | 大规模知识库再考虑 |
+| Weaviate | AI 原生向量数据库 | schema、语义搜索、混合搜索和 RAG 能力完整 | 概念和配置较多 | 适合做完整 AI 应用后端 |
+| Pinecone | 托管向量数据库 | 省运维，生产化能力强 | 商业服务，成本和数据出域要考虑 | 外部 SaaS 场景可考虑 |
+| pgvector | PostgreSQL 向量扩展 | 如果已有 PostgreSQL，架构简单 | 超大规模向量检索性能不如专用向量库 | 业务数据强依赖 PG 时可考虑 |
+| Elasticsearch 9 / ES9 | 搜索引擎 + 向量检索 | 关键词检索、过滤、聚合、权限、运维生态成熟，同时支持 dense vector/kNN | 纯向量能力不是最轻量，mapping 和检索参数需要设计 | 当前 demo 优先选 |
+
+当前领导侧已经倾向使用 ES9，并且本地已经安装好 ES9。因此周三 demo 的策略应该是：
+
+```text
+不要为了“向量库最优”而引入新组件。
+先基于 ES9 做出可演示、可解释、可扩展的 RAG Demo。
+```
+
+选择 ES9 做 demo 的理由：
+
+- 领导已经明确关注 ES9，演示更贴近预期。
+- ES 本身擅长关键词检索、字段过滤、分页、聚合和工程化管理。
+- ES9 支持 dense vector / kNN，可承载基础向量检索。
+- 对中文手册问答来说，关键词检索和向量检索可以互补。
+- 后续可以自然扩展为混合检索：BM25 + 向量相似度 + rerank。
+- 运维和团队接受度通常比新引入 Milvus/Qdrant 更高。
+
+当前 `吉野家5S管理手册` 的 demo 推荐路线：
+
+```text
+PDF
+ -> PyMuPDF4LLM 解析为 Markdown
+ -> 第 22 页 pdfplumber 单独结构化
+ -> 章节优先分块
+ -> embedding 生成向量
+ -> 写入 ES9 index
+      - content: chunk 文本
+      - content_vector: dense_vector
+      - source: PDF 文件名
+      - page: 页码
+      - section: 章节
+      - chunk_type: normal_text / table_row
+ -> 用户问题 embedding
+ -> ES9 kNN / hybrid search 召回 Top-K
+ -> 把召回内容和原始问题交给 LLM
+ -> 返回答案 + 来源页码
+```
+
+ES9 索引设计需要特别注意：
+
+| 字段 | 作用 |
+| --- | --- |
+| `content` | 原始 chunk 文本，用于展示、BM25、LLM 上下文 |
+| `content_vector` | embedding 向量，用于 kNN 检索 |
+| `source` | 文档来源，例如 `吉野家5S管理手册.pdf` |
+| `page` | 页码，用于答案引用 |
+| `section` | 章节标题，用于过滤和展示 |
+| `chunk_type` | 区分普通正文、表格行、图片说明等 |
+| `table_category` | 第 22 页检查表的一级分类，可选 |
+| `score_rule` | 检查表扣分规则，可选 |
+
+对于 demo，检索策略可以先做三档：
+
+1. 纯向量检索：验证语义搜索是否能召回正确段落。
+2. 关键词检索：验证用户输入手册原词时 ES 的传统搜索能力。
+3. 混合检索：把 BM25 和向量检索结果合并，提升稳定性。
+
+演示时可以准备几类问题：
+
+| 问题类型 | 示例 |
+| --- | --- |
+| 定义类 | “5S 是什么意思？” |
+| 流程类 | “5S 实施步骤有哪些？” |
+| 职责类 | “餐厅总经理在 5S 中负责什么？” |
+| 标准类 | “物品有名有家有哪些要求？” |
+| 检查表类 | “整理 10 分包含哪些检查项？” |
+| 扣分类 | “清扫部分发现问题怎么扣分？” |
+
+当前阶段的判断：
+
+```text
+学习和快速验证：Chroma / FAISS 很轻。
+通用生产向量库：Qdrant / Milvus / Weaviate 更专业。
+当前周三 demo：优先 ES9，因为它已经安装好、领导关注、且适合展示关键词 + 向量混合检索。
+```
+
+后续如果 ES9 demo 跑通，再考虑把同一份 chunk 数据复制到 Qdrant 或 Milvus，做横向对比实验：
+
+```text
+同一批 chunk
+同一个 embedding 模型
+同一组测试问题
+比较 ES9 / Qdrant / Milvus 的召回质量、延迟、部署复杂度和维护成本
+```
+
+这样对比才公平，因为变量只剩下“检索后端”，不会把解析、分块、embedding 模型差异混在一起。
+
+参考资料：
+
+- Elastic 官方文档：dense vector search、kNN、hybrid search。
+- Chroma 官方文档：embedding 存储、metadata filtering、dense/sparse/hybrid search。
+- Qdrant 官方文档：向量数据库、payload/filter、相似度检索。
+- Milvus 官方文档：企业级向量数据库、分布式索引和检索。
+- Weaviate 官方文档：语义搜索、混合搜索、RAG 后端。
+- Pinecone 官方文档：托管向量数据库、metadata filtering、rerank、hybrid search。
+- pgvector / FAISS 官方项目：PostgreSQL 向量扩展和本地向量检索库。

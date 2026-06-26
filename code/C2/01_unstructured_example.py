@@ -2,6 +2,7 @@ from unstructured.partition.auto import partition
 
 # PDF文件路径
 pdf_path = "../../data/C2/pdf/rag.pdf"
+# pdf_path = "E:\\合兴\\吉野家5S管理手册.pdf"
 
 # 使用Unstructured加载并解析PDF文档
 elements = partition(
